@@ -15,8 +15,8 @@ def get_bool_env(name: str, default: bool = False) -> bool:
 
 
 def get_str_env(name: str, default: str = "") -> str:
-    val = os.getenv(name)
-    return default if val is None else str(val).strip()
+    val = os.environ.get(name)
+    return default if val is None else val.strip()
 
 
 def get_int_env(name: str, default: int = 0) -> int:
