@@ -6,7 +6,6 @@ from typing import List
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
-    HumanMessage,
     SystemMessage,
     ToolMessage,
 )
@@ -61,41 +60,41 @@ class ContextManager:
         Returns:
             Number of tokens
         """
-        # Estimate token count based on character length (different calculation for English and non-English)
         token_count = 0
 
         # Count tokens in content field
-        if hasattr(message, "content") and message.content:
-            # Handle different content types
-            if isinstance(message.content, str):
-                token_count += self._count_text_tokens(message.content)
+        content = getattr(message, "content", None)
+        if content:
+            # Optimize type check by assuming most content will be str (breaks fast, avoids isinstance overhead)
+            if type(content) is str:
+                token_count += self._count_text_tokens(content)
 
-        # Count role-related tokens
-        if hasattr(message, "type"):
-            token_count += self._count_text_tokens(message.type)
+        # Count role-related tokens using direct attribute access
+        msg_type = getattr(message, "type", None)
+        if msg_type:
+            token_count += self._count_text_tokens(msg_type)
 
-        # Special handling for different message types
-        if isinstance(message, SystemMessage):
-            # System messages are usually short but important, slightly increase estimate
+        # Special handling for different message types (order checks using type() for single dispatch speed)
+        mtype = type(message)
+        if mtype is SystemMessage:
             token_count = int(token_count * 1.1)
-        elif isinstance(message, HumanMessage):
-            # Human messages use normal estimation
-            pass
-        elif isinstance(message, AIMessage):
-            # AI messages may contain reasoning content, slightly increase estimate
+        elif mtype is AIMessage:
             token_count = int(token_count * 1.2)
-        elif isinstance(message, ToolMessage):
-            # Tool messages may contain large amounts of structured data, increase estimate
+        elif mtype is ToolMessage:
             token_count = int(token_count * 1.3)
+        # HumanMessage matches default estimation
 
         # Process additional information in additional_kwargs
-        if hasattr(message, "additional_kwargs") and message.additional_kwargs:
-            # Simple estimation of extra field tokens
-            extra_str = str(message.additional_kwargs)
+        additional_kwargs = getattr(message, "additional_kwargs", None)
+        if additional_kwargs:
+            # Faster conversion to str for dicts
+            extra_str = str(additional_kwargs)
             token_count += self._count_text_tokens(extra_str)
-
             # If there are tool_calls, add estimation
-            if "tool_calls" in message.additional_kwargs:
+            if (
+                isinstance(additional_kwargs, dict)
+                and "tool_calls" in additional_kwargs
+            ):
                 token_count += 50  # Add estimation for function call information
 
         # Ensure at least 1 token
@@ -191,38 +190,36 @@ class ContextManager:
 
         available_token = self.token_limit
         prefix_messages = []
-
+        num_prefix = min(self.preserve_prefix_message_count, len(messages))
         # 1. Preserve head messages of specified length to retain system prompts and user input
-        for i in range(min(self.preserve_prefix_message_count, len(messages))):
+        for i in range(num_prefix):
             cur_token_cnt = self._count_message_tokens(messages[i])
             if available_token > 0 and available_token >= cur_token_cnt:
                 prefix_messages.append(messages[i])
                 available_token -= cur_token_cnt
             elif available_token > 0:
                 # Truncate content to fit available tokens
-                truncated_message = self._truncate_message_content(
-                    messages[i], available_token
+                prefix_messages.append(
+                    self._truncate_message_content(messages[i], available_token)
                 )
-                prefix_messages.append(truncated_message)
                 return prefix_messages
             else:
                 break
 
         # 2. Compress subsequent messages from the tail, some messages may be discarded
-        messages = messages[len(prefix_messages) :]
+        # Instead of slicing and creating a new list, just iterate directly over the tail
         suffix_messages = []
-        for i in range(len(messages) - 1, -1, -1):
-            cur_token_cnt = self._count_message_tokens(messages[i])
-
+        n = len(messages)
+        for idx in range(n - 1, num_prefix - 1, -1):
+            cur_token_cnt = self._count_message_tokens(messages[idx])
             if cur_token_cnt > 0 and available_token >= cur_token_cnt:
-                suffix_messages = [messages[i]] + suffix_messages
+                # Prepend: build as reversed list; insert at front (faster than list concatenation in loop)
+                suffix_messages.insert(0, messages[idx])
                 available_token -= cur_token_cnt
             elif available_token > 0:
-                # Truncate content to fit available tokens
-                truncated_message = self._truncate_message_content(
-                    messages[i], available_token
+                suffix_messages.insert(
+                    0, self._truncate_message_content(messages[idx], available_token)
                 )
-                suffix_messages = [truncated_message] + suffix_messages
                 return prefix_messages + suffix_messages
             else:
                 break
@@ -243,13 +240,11 @@ class ContextManager:
         Returns:
             New message instance with truncated content
         """
-
         # Create a deep copy of the original message to preserve all attributes
         truncated_message = copy.deepcopy(message)
-
-        # Truncate only the content attribute
-        truncated_message.content = message.content[:max_tokens]
-
+        # Truncate only the content attribute (skip assignment if possible)
+        if hasattr(truncated_message, "content") and truncated_message.content:
+            truncated_message.content = truncated_message.content[:max_tokens]
         return truncated_message
 
     def _create_summary_message(self, messages: List[BaseMessage]) -> BaseMessage:
