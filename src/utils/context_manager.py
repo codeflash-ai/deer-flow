@@ -116,15 +116,9 @@ class ContextManager:
         if not text:
             return 0
 
-        english_chars = 0
-        non_english_chars = 0
-
-        for char in text:
-            # Check if character is ASCII (English letters, digits, punctuation)
-            if ord(char) < 128:
-                english_chars += 1
-            else:
-                non_english_chars += 1
+        # Using generator expressions with sum and str.isascii for better performance
+        english_chars = sum(1 for char in text if char.isascii())
+        non_english_chars = len(text) - english_chars
 
         # Calculate tokens: English at 4 chars/token, others at 1 char/token
         english_tokens = english_chars // 4
