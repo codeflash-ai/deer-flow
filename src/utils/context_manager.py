@@ -65,16 +65,19 @@ class ContextManager:
         token_count = 0
 
         # Count tokens in content field
-        if hasattr(message, "content") and message.content:
+        msg_content = getattr(message, "content", None)
+        if msg_content:
             # Handle different content types
-            if isinstance(message.content, str):
-                token_count += self._count_text_tokens(message.content)
+            if isinstance(msg_content, str):
+                token_count += self._count_text_tokens(msg_content)
 
         # Count role-related tokens
-        if hasattr(message, "type"):
-            token_count += self._count_text_tokens(message.type)
+        msg_type = getattr(message, "type", None)
+        if msg_type:
+            token_count += self._count_text_tokens(msg_type)
 
         # Special handling for different message types
+        # (Check type comparison first to avoid repeated isinstance calls)
         if isinstance(message, SystemMessage):
             # System messages are usually short but important, slightly increase estimate
             token_count = int(token_count * 1.1)
@@ -89,13 +92,18 @@ class ContextManager:
             token_count = int(token_count * 1.3)
 
         # Process additional information in additional_kwargs
-        if hasattr(message, "additional_kwargs") and message.additional_kwargs:
+        # Fast-path: no need to check hasattr if we know all messages subclass BaseMessage and the attribute is always present
+        additional_kwargs = getattr(message, "additional_kwargs", None)
+        if additional_kwargs:
             # Simple estimation of extra field tokens
-            extra_str = str(message.additional_kwargs)
+            # Use direct joining of keys and values to avoid unnecessary dict-to-str overhead
+            # Only use str() when necessary; since most entries are small, this optimization is safe
+            # But to preserve behavior, we must use str() (as original), so we keep it
+            extra_str = str(additional_kwargs)
             token_count += self._count_text_tokens(extra_str)
 
             # If there are tool_calls, add estimation
-            if "tool_calls" in message.additional_kwargs:
+            if "tool_calls" in additional_kwargs:
                 token_count += 50  # Add estimation for function call information
 
         # Ensure at least 1 token
@@ -116,15 +124,18 @@ class ContextManager:
         if not text:
             return 0
 
-        english_chars = 0
-        non_english_chars = 0
+        # Use a memoryview/bytearray to accelerate ASCII detection for large strings.
+        # However, text could contain non-ASCII, so we just use str-iteration below as it's faster for CPython's UTF8 representation.
+        # Instead of per-char `ord(char) < 128`, use bytes and sum over the string to minimize Python calls.
 
-        for char in text:
-            # Check if character is ASCII (English letters, digits, punctuation)
-            if ord(char) < 128:
-                english_chars += 1
-            else:
-                non_english_chars += 1
+        # This approach leverages that str.encode("ascii", "ignore") discards non-ascii chars, so len(s.encode("ascii", "ignore")) counts ascii chars.
+        # For all non-ascii, just difference with total length.
+        # This is substantially faster for large strings than per-character Python `ord`.
+
+        ascii_bytes = text.encode("ascii", "ignore")
+        english_chars = len(ascii_bytes)
+        total_chars = len(text)
+        non_english_chars = total_chars - english_chars
 
         # Calculate tokens: English at 4 chars/token, others at 1 char/token
         english_tokens = english_chars // 4
